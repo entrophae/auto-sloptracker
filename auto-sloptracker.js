@@ -7,6 +7,8 @@
 // @match        https://open.spotify.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @connect      sloptracker.org
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=spotify.com
 // ==/UserScript==
@@ -71,15 +73,67 @@
             background-color: #8c8c8c;
             color: #ffffff;
         }
+        .slop-badge-queued {
+            background-color: #e5a50a;
+            color: #000000;
+        }
+        .slop-toast {
+            position: fixed;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #282828;
+            color: #fff;
+            padding: 14px 24px;
+            border-radius: 8px;
+            z-index: 999999;
+            font-family: sans-serif;
+            font-size: 14px;
+            font-weight: bold;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            text-align: center;
+            white-space: pre-line;
+            transition: opacity 0.3s ease;
+            pointer-events: none;
+        }
     `);
 
-    // Cache to store results so we can apply badges as the user scrolls
-    const slopCache = new Map();
+    function showToast(message, durationMs = 4000) {
+        const toast = document.createElement('div');
+        toast.className = 'slop-toast';
+        toast.innerText = message;
+        document.body.appendChild(toast);
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            setTimeout(() => toast.remove(), 300);
+        }, durationMs);
+    }
 
-    let errorAlertShown = false; // Prevents alert spam if a whole batch fails
-    let tracksCheckedSinceLastLimit = 0;
-    let rateLimitAlertShown = false;
+    let savedCache = [];
+    try {
+        savedCache = JSON.parse(GM_getValue('sloptracker_cache', '[]'));
+    } catch(e) {
+        console.error("Failed to load sloptracker cache", e);
+    }
+    const slopCache = new Map(savedCache);
+    function updateCache(url, value) {
+        slopCache.set(url, value);
+
+        // Only save to disk if it's a successful, completed result (ignore 'pending', 'error', 'rate_limited')
+        if (typeof value === 'object' && value.probabilityAiGenerated !== undefined) {
+            let entriesToSave = Array.from(slopCache.entries())
+                .filter(([k, v]) => typeof v === 'object' && v.probabilityAiGenerated !== undefined);
+
+            if (entriesToSave.length > 10000) {
+                entriesToSave = entriesToSave.slice(-10000);
+            }
+
+            GM_setValue('sloptracker_cache', JSON.stringify(entriesToSave));
+        }
+    }
+
     const batchSize = 1;
+    const maxPasses = 3; // ammount of times the site will rescan
 
     // Global state to keep both buttons synced if Spotify re-renders the top bar
     let scanState = {
@@ -103,7 +157,11 @@
             const cacheData = slopCache.get(trackUrl);
 
             if (cacheData) {
-                const targetState = cacheData === 'pending' ? 'pending' : 'done';
+                // Determine target state string to avoid redundant DOM updates
+                let targetState = 'done';
+                if (cacheData === 'pending') targetState = 'pending';
+                if (cacheData === 'rate_limited') targetState = 'rate_limited';
+
                 if (link.dataset.slopState !== targetState) {
                     applyBadge(link, trackUrl);
                 }
@@ -112,14 +170,22 @@
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // 2. Interval to inject buttons into the action bar AND the sticky top bar
+    // Interval to inject buttons into the action bar AND the sticky top bar
+    setTimeout(() => {
+        document.querySelectorAll('main a[href^="/track/"]').forEach(link => {
+            const trackUrl = link.href.split('?')[0];
+            if (slopCache.has(trackUrl)) applyBadge(link, trackUrl);
+        });
+    }, 1500);
+
+    // Interval to inject buttons
     setInterval(() => {
         const actionBar = document.querySelector('[data-testid="action-bar-row"]');
         const topBar = document.querySelector('[data-testid="topbar-content"]');
 
-        // Safely check if our button class exists inside these elements
         if (actionBar && !actionBar.querySelector('.slop-btn-injected')) {
-            actionBar.querySelector('div:last-of-type').before(createButton());
+            const moreBtn = actionBar.querySelector('[data-testid="more-button"]');
+            if (moreBtn) moreBtn.after(createButton());
         }
         if (topBar && !topBar.querySelector('.slop-btn-injected')) {
             topBar.appendChild(createButton());
@@ -164,6 +230,8 @@
                         const batch = newUrls.slice(i, i + batchSize);
                         await Promise.all(batch.map(url => checkTrack(url)));
                         processed += batch.length;
+
+                        await new Promise(r => setTimeout(r, 1000));
                     }
                     updateButtons(`checking ${processed}/${newUrls.length} on screen...`, true);
                 } else {
@@ -201,6 +269,37 @@
                     unchangedCount = 0;
                 }
             }
+
+            // --- RETRY PHASE ---
+            let pass = 1;
+
+            while (pass <= maxPasses) {
+                const retryUrls = Array.from(slopCache.entries())
+                    .filter(([url, state]) => state === 'rate_limited')
+                    .map(([url, state]) => url);
+
+                if (retryUrls.length === 0) break;
+
+                if (pass === 1) {
+                    showToast(`Finished scrolling the playlist.\n\n${retryUrls.length} tracks were skipped due to rate limits.\n\nThe script will now slowly retry them in the background.`);
+                }
+
+                for (let i = 0; i < retryUrls.length; i++) {
+                    updateButtons(`retrying ${i+1}/${retryUrls.length}...`, true);
+                    await checkTrack(retryUrls[i]);
+                    await new Promise(r => setTimeout(r, 2500));
+                }
+                pass++;
+            }
+
+            // If any somehow survived 3 retry passes, mark them as permanently failed
+            for (const [url, state] of slopCache.entries()) {
+                if (state === 'rate_limited') {
+                    slopCache.set(url, { error: true, message: "Max retries exhausted for rate limits." });
+                    updateVisibleBadges(url);
+                }
+            }
+
             updateButtons('🤖 scan complete', true);
         } catch (err) {
             console.error("sloptracker scan error:", err);
@@ -214,7 +313,10 @@
 
     // 4. Fetch wrapper for SlopTracker (With Rate-Limit Counter & Alert)
     function checkTrack(url, retries = 3) {
-        if (slopCache.has(url) && slopCache.get(url) !== 'pending') return Promise.resolve();
+        const currentCache = slopCache.get(url);
+        if (currentCache && currentCache !== 'pending' && currentCache !== 'rate_limited') {
+            return Promise.resolve();
+        }
 
         slopCache.set(url, 'pending');
         updateVisibleBadges(url);
@@ -225,11 +327,11 @@
                 url: "https://sloptracker.org/",
                 headers: {
                     "Content-Type": "text/plain;charset=UTF-8",
-                    "next-action": "60a73caf04508672a53504c8151e230e4b5e092c28", // this is necessary to get the right response
+                    "next-action": "60a73caf04508672a53504c8151e230e4b5e092c28",
                     "Referer": "https://sloptracker.org/"
                 },
                 data: JSON.stringify([url]),
-                onload: async function(response) {
+                onload: function(response) {
                     let foundResult = false;
                     let isRateLimited = false;
                     let errorMessage = "No AI data found in 200 OK response.";
@@ -267,42 +369,14 @@
                         errorMessage = `Server returned HTTP ${response.status}`;
                     }
 
-                    // --- HANDLE THE RESULT ---
-
                     if (foundResult) {
-                        tracksCheckedSinceLastLimit++;
-                        rateLimitAlertShown = false; // Reset the alert lock because we are succeeding again
                         resolve();
                     } else if (isRateLimited) {
-                        if (!rateLimitAlertShown) {
-                            rateLimitAlertShown = true;
-                            const exactTime = new Date().toLocaleTimeString();
-                            alert(
-                                `🛑 Rate limit reached at ${exactTime}\n\n` +
-                                `Successfully checked ${tracksCheckedSinceLastLimit} tracks before hitting the limit.\n\n` +
-                                `The script will now pause and automatically retry.`
-                            );
-                            tracksCheckedSinceLastLimit = 0; // Reset counter for the next batch
-                        }
-
-                        if (retries > 0) {
-                            document.querySelectorAll('main a[href^="/track/"]').forEach(linkNode => {
-                                if (linkNode.href.split('?')[0] === url) {
-                                    const badge = linkNode.parentNode.parentNode.querySelector('.slop-badge');
-                                    if (badge) badge.innerText = `⏳ rate limited, waiting...`;
-                                }
-                            });
-
-                            // Wait 3 seconds, then recursively try again
-                            await new Promise(r => setTimeout(r, 3000));
-                            resolve(checkTrack(url, retries - 1));
-                        } else {
-                            slopCache.set(url, { error: true, message: "Rate limit reached (Max retries exhausted)" });
-                            updateVisibleBadges(url);
-                            resolve();
-                        }
+                        updateCache(url, 'rate_limited');
+                        updateVisibleBadges(url);
+                        resolve();
                     } else {
-                        slopCache.set(url, { error: true, message: errorMessage });
+                        updateCache(url, { error: true, message: errorMessage });
                         updateVisibleBadges(url);
                         resolve();
                     }
@@ -330,8 +404,11 @@
         const cacheData = slopCache.get(url);
         if (!cacheData) return;
 
-        const isPending = cacheData === 'pending';
-        linkNode.dataset.slopState = isPending ? 'pending' : 'done';
+        let stateString = 'done';
+        if (cacheData === 'pending') stateString = 'pending';
+        if (cacheData === 'rate_limited') stateString = 'rate_limited';
+
+        linkNode.dataset.slopState = stateString;
 
         const parent = linkNode.parentNode.parentNode;
         const existingBadge = parent.querySelector('.slop-badge');
@@ -340,10 +417,13 @@
         const badge = document.createElement('span');
         badge.className = 'slop-badge';
 
-        if (isPending) {
+        if (stateString === 'pending') {
             badge.innerText = `⏳ checking...`;
             badge.classList.add('slop-badge-pending');
-            badge.title = "Fetching data from SlopTracker...";
+        } else if (stateString === 'rate_limited') {
+            badge.innerText = `⏸️ queued`;
+            badge.classList.add('slop-badge-queued');
+            badge.title = "Rate limit hit. This will be retried automatically at the end.";
         } else if (cacheData.error) {
             badge.innerText = `⚠️ failed`;
             badge.classList.add('slop-badge-error');
@@ -371,6 +451,5 @@
 
         parent.appendChild(badge);
     }
-
 
 })();
