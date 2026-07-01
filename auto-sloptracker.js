@@ -2,7 +2,7 @@
 // @name         auto-sloptracker
 // @namespace    http://tampermonkey.net/
 // @author       In work with Gemini AI
-// @version      1.0
+// @version      1.01
 // @description  checks if spotify tracks on the current site ar ai-generated using sloptracker
 // @match        https://open.spotify.com/*
 // @grant        GM_xmlhttpRequest
@@ -11,6 +11,8 @@
 // @grant        GM_setValue
 // @connect      sloptracker.org
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=spotify.com
+// @downloadURL https://update.greasyfork.org/scripts/585192/auto-sloptracker.user.js
+// @updateURL https://update.greasyfork.org/scripts/585192/auto-sloptracker.meta.js
 // ==/UserScript==
 
 /* // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
@@ -152,7 +154,7 @@
 
     // 1. MutationObserver: Watches the DOM to apply/update badges when scrolling
     const observer = new MutationObserver(() => {
-        document.querySelectorAll('main a[href^="/track/"]').forEach(link => {
+        document.querySelectorAll('main a[href*="/track/"]').forEach(link => {
             const trackUrl = link.href.split('?')[0];
             const cacheData = slopCache.get(trackUrl);
 
@@ -172,7 +174,7 @@
 
     // Interval to inject buttons into the action bar AND the sticky top bar
     setTimeout(() => {
-        document.querySelectorAll('main a[href^="/track/"]').forEach(link => {
+        document.querySelectorAll('main a[href*="/track/"]').forEach(link => {
             const trackUrl = link.href.split('?')[0];
             if (slopCache.has(trackUrl)) applyBadge(link, trackUrl);
         });
@@ -210,7 +212,7 @@
 
         try {
             while (true) {
-                const trackLinks = Array.from(document.querySelectorAll('main a[href^="/track/"]'));
+                const trackLinks = Array.from(document.querySelectorAll('main a[href*="/track/"]'));
                 if (trackLinks.length === 0) break;
 
                 const newUrls = [];
@@ -255,7 +257,7 @@
 
                 await new Promise(r => setTimeout(r, 1200));
 
-                const newTrackLinks = Array.from(document.querySelectorAll('main a[href^="/track/"]'));
+                const newTrackLinks = Array.from(document.querySelectorAll('main a[href*="/track/"]'));
                 if (newTrackLinks.length === 0) break;
 
                 const lastDomElementAfterScroll = newTrackLinks[newTrackLinks.length - 1];
@@ -392,7 +394,7 @@
 
     // Helper to find visible links for a specific URL and update them
     function updateVisibleBadges(url) {
-        document.querySelectorAll('main a[href^="/track/"]').forEach(linkNode => {
+        document.querySelectorAll('main a[href*="/track/"]').forEach(linkNode => {
             if (linkNode.href.split('?')[0] === url) {
                 applyBadge(linkNode, url);
             }
