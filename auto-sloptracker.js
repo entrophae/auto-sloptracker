@@ -2,7 +2,7 @@
 // @name         auto-sloptracker
 // @namespace    http://tampermonkey.net/
 // @author       In work with Gemini AI
-// @version      1.01
+// @version      1.1
 // @description  checks if spotify tracks on the current site ar ai-generated using sloptracker
 // @match        https://open.spotify.com/*
 // @grant        GM_xmlhttpRequest
@@ -153,24 +153,39 @@
     }
 
     // 1. MutationObserver: Watches the DOM to apply/update badges when scrolling
+    let observerTimeout = null;
     const observer = new MutationObserver(() => {
-        document.querySelectorAll('main a[href*="/track/"]').forEach(link => {
-            const trackUrl = link.href.split('?')[0];
-            const cacheData = slopCache.get(trackUrl);
+        if (observerTimeout) return;
+        observerTimeout = setTimeout(() => {
+            document.querySelectorAll('main a[href*="/track/"]').forEach(link => {
+                const trackUrl = link.href.split('?')[0];
+                const cacheData = slopCache.get(trackUrl);
 
-            if (cacheData) {
-                // Determine target state string to avoid redundant DOM updates
-                let targetState = 'done';
-                if (cacheData === 'pending') targetState = 'pending';
-                if (cacheData === 'rate_limited') targetState = 'rate_limited';
+                if (cacheData) {
+                    // Determine target state string to avoid redundant DOM updates
+                    let targetState = 'done';
+                    if (cacheData === 'pending') targetState = 'pending';
+                    if (cacheData === 'rate_limited') targetState = 'rate_limited';
 
-                if (link.dataset.slopState !== targetState) {
-                    applyBadge(link, trackUrl);
+                    if (link.dataset.slopState !== targetState) {
+                        applyBadge(link, trackUrl);
+                    }
                 }
-            }
-        });
+            });
+            observerTimeout = null;
+        }, 300);
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+
+    // Wait for <main> to render before observing
+    const initObserver = () => {
+        const mainElement = document.querySelector('main');
+        if (mainElement) {
+            observer.observe(mainElement, { childList: true, subtree: true });
+        } else {
+            setTimeout(initObserver, 500);
+        }
+    };
+    initObserver();
 
     // Interval to inject buttons into the action bar AND the sticky top bar
     setTimeout(() => {
