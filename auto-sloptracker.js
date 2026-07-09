@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         auto-sloptracker
 // @namespace    http://tampermonkey.net/
-// @author       In work with Gemini AI
-// @version      1.3
+// @author       entrophae | in work with Gemini AI
+// @version      1.4
 // @description  checks if spotify/tidal tracks on the current site are ai-generated using sloptracker
 // @match        https://open.spotify.com/*
 // @match        https://tidal.com/album/*
 // @match        https://tidal.com/track/*
 // @match        https://tidal.com/artist/*
+// @match        https://tidal.com/mix/*
 // @match        https://tidal.com/playlist/*
 // @match        https://tidal.com/view/pages/*
 // @match        https://sloptracker.org/*
@@ -21,13 +22,14 @@
 // @connect      tidal.com
 // @run-at       document-start
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=spotify.com
-// @downloadURL https://update.greasyfork.org/scripts/585192/auto-sloptracker.user.js
-// @updateURL https://update.greasyfork.org/scripts/585192/auto-sloptracker.meta.js
+// @downloadURL  https://update.greasyfork.org/scripts/585192/auto-sloptracker.user.js
+// @updateURL    https://update.greasyfork.org/scripts/585192/auto-sloptracker.meta.js
 // ==/UserScript==
 
 /* // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
 // This code uses the search from sloptracker.org in a loop for the tracks found on the current site  //
 // All props go to sloptracker.org                                                                    //
+// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
 // // How the AI audio analysis works                                                                 //
 // //                                                                                                 //
 // // Spectral analysis: Examines the frequency spectrum of the audio to find                         //
@@ -60,6 +62,7 @@
             human: 'slop-badge-human'
         },
         state: {
+            unscanned: 'unscanned',
             done: 'done',
             pending: 'pending',
             rateLimited: 'rate_limited',
@@ -99,7 +102,7 @@
         }
 
     }
-    
+
     const isSpotify = window.location.href.includes(CONFIG.domain.spotify);
     const isTidal = window.location.hostname.includes(CONFIG.domain.tidal);
     const isSloptracker = window.location.hostname.includes(CONFIG.domain.sloptracker);
@@ -107,7 +110,7 @@
 
     let currentNextActionHash = null;
     let fetchHashPromise = null;
-    
+
     let slopCache;
 
     let scanState = {
@@ -183,7 +186,7 @@
             pointer-events: none;
         }
     `;
-    
+
     function initiate() {
         initSlopCache();
         setObserver();
@@ -191,7 +194,7 @@
         initialCacheCheck(1500);
         injectButtons(1000);
     }
-    
+
     if (isSloptracker) {
         if (!window.location.search.includes(CONFIG.slopIgnoreParam)) {
             return;
@@ -299,7 +302,7 @@
 
         return;
     }
-    else { 
+    else {
         GM_addStyle(style);
         if (currentPlatform) {
             initiate();
@@ -366,12 +369,12 @@
                     if (response.status === 200) {
                         try {
                             const data = JSON.parse(response.responseText);
-                            
+
                             if (data && data.links && Array.isArray(data.links)) {
-                                const spotifyLinkObj = data.links.find(link => 
+                                const spotifyLinkObj = data.links.find(link =>
                                     link.storeId === 'spotify' || link.name === 'Spotify'
                                 );
-                                
+
                                 if (spotifyLinkObj && spotifyLinkObj.url) {
                                     return resolve(spotifyLinkObj.url);
                                 }
@@ -501,7 +504,7 @@
 
         let entriesToSave = Array.from(slopCache.entries())
             .filter(([k, v]) => typeof v === 'string' || (typeof v === 'object' && v.probabilityAiGenerated !== undefined));
-        
+
         GM_setValue(CONFIG.cacheId.slopTracker, JSON.stringify(entriesToSave));
     }
 
@@ -522,8 +525,6 @@
     function checkCacheState(track) {
         const { spotifyUrl, tidalSmartLink } = track;
 
-        let targetState = CONFIG.state.done;
-
         let cacheData = slopCache.get(tidalSmartLink);
         if (typeof cacheData === 'string') {
             cacheData = slopCache.get(cacheData);
@@ -532,7 +533,11 @@
         if (!cacheData && spotifyUrl) {
             cacheData = slopCache.get(spotifyUrl);
         }
+
+        let targetState = CONFIG.state.unscanned;
+
         if (cacheData) {
+            targetState = CONFIG.state.done;
             if (cacheData === CONFIG.state.pending) targetState = CONFIG.state.pending;
             if (cacheData === CONFIG.state.rateLimited) targetState = CONFIG.state.rateLimited;
         }
@@ -567,11 +572,11 @@
         setTimeout(async () => {
             let tracks;
             if (isSpotify) {
-                tracks = getSpotifyLinks().map( track => { 
+                tracks = getSpotifyLinks().map( track => {
                     return { node: track.node, url: track.spotifyUrl }
                 })
             } else if (isTidal) {
-                tracks = getTidalSmartLinks().map( track => { 
+                tracks = getTidalSmartLinks().map( track => {
                     return { node: track.node, url: track.tidalSmartLink }
                 })
             }
@@ -602,7 +607,7 @@
             }
         }, interval);
     }
-    
+
     function createButton() {
         const btn = document.createElement('button');
         btn.className = CONFIG.pluginClass;
@@ -611,7 +616,7 @@
         btn.addEventListener('click', startScrollScan);
         return btn;
     }
-    
+
     async function startScrollScan() {
         updateButtons('scrolling...', true);
 
@@ -801,7 +806,7 @@
             );
         });
     }
-    
+
     function showToast(message, durationMs = 4000) {
         const toast = document.createElement('div');
         toast.className = CONFIG.toastClas;
@@ -816,9 +821,9 @@
     // Helper to find visible links for a specific URL and update them
     async function updateVisibleBadges(url) {
         const tracks = await getLinks();
-        tracks.forEach(track => { 
+        tracks.forEach(track => {
             if (track.spotifyUrl === url) {
-                applyBadge(track); 
+                applyBadge(track);
             }
         });
     }
@@ -826,9 +831,11 @@
     // 5. Applies or updates the visual badge for a DOM node
     function applyBadge(track) {
         const { cacheData, targetState } = checkCacheState(track);
+
+        track.node.dataset.slopState = targetState;
+
         if (!cacheData) return;
 
-        track.node.slopState = targetState;
 
         const existingBadge = track.node.querySelector(`.${CONFIG.badgeClass.self}`);
         if (existingBadge) existingBadge.remove();
