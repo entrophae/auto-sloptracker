@@ -2,7 +2,7 @@
 // @name         auto-sloptracker
 // @namespace    http://tampermonkey.net/
 // @author       entrophae | in work with Gemini AI
-// @version      1.4
+// @version      1.3
 // @description  checks if spotify/tidal tracks on the current site are ai-generated using sloptracker
 // @match        https://open.spotify.com/*
 // @match        https://tidal.com/album/*
